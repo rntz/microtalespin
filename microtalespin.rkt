@@ -10,8 +10,12 @@
 ;; Michael Arntzenius, daekharel@gmail.com, October 2018
 
 (require syntax/parse/define)
+
 (define-syntax-rule (define-flat-contract name contract ...)
   (define name (flat-rec-contract name contract ...)))
+(define-syntax-rule (define-flat-contracts [name contract ...] ...)
+  (define-values (name ...)
+    (flat-murec-contract ([name contract ...] ...) (values name ...))))
 
 (define-syntax-parser TODO
   [_ #'(error "TODO: unimplemented")])
@@ -21,9 +25,11 @@
 ;; Pattern (or unification) variables. TODO: make (pvar 'x) display as "?x".
 (struct pvar (id) #:transparent)
 
-;; Atoms are symbols, booleans, and numbers.
+;; Atoms are symbols, booleans, and numbers. Old-school lisp included the empty
+;; list here; I use atom-or-nil? for that purpose.
 ;; A ::= x | b | n
-(define-flat-contract atom? symbol? boolean? number?)
+(define atom? (or/c symbol? boolean? number?))
+(define atom-or-nil? (or/c atom? '()))
 
 ;; CDs. I don't know what CD stands for, but they seem to be
 ;; 1. A head (any atom -- usually, I think, a symbol).
@@ -37,14 +43,6 @@
   ([header atom?]
    [roles  (hash/c atom? any/c #:immutable #t)])
   #:transparent)
-
-;; Patterns P are pattern variables, atoms, lists of patterns, hashes mapping
-;; atoms to patterns, or CDs.
-(define-flat-contract pattern?
-  pvar? atom? (listof pattern?) (hash/c atom? pattern?) cd?)
-
-;; A substitution is a finite map from pattern variables to patterns.
-(define subst? (hash/c symbol? pattern? #:immutable #t))
 
 
 ;; ===== CD UNIFICATION =====
@@ -75,32 +73,19 @@
 ;; I'm still not fully sure how this _ought_ to interact with unification
 ;; variables, but I've tried to imitate Sack's code's behavior.
 
-(define (unify ))
-
-
-;; ===== PATTERN UNIFICATION =====
-
-;; Lines 1570-1663 in microtalespin.txt. This is actually *dead code* in
-;; microtalespin.txt; it seems to be merely a simpler version of the
-;; CD-unification that micro-Talespin actually uses.
-;;
 ;; Sack's code uses association lists for substitutions. I use Racket hash
 ;; tables; they provide the interface I need and are probably more efficient.
 ;; Sack's code has a global flag that disables/enables the occurs check. I
 ;; always perform the check.
-;;
-;; Sack's pattern unification code is entirely unused. TODO: upgrade this to
-;; unify CDs, whatever those are.
 
-;; Expands away all variables that have already unified with something. Like
-;; Sack's replace-variables or instantiate. (AFAICT they do (almost?) the same
-;; thing, and are both unused elsewhere in the file.)
-(define/contract (expand pat subst)
-  (-> pattern? subst? pattern?)
-  (match pat
-    [(pvar x) #:when (hash-has-key? subst x) (expand (hash-ref subst x) subst)]
-    [(cons x y) (cons (expand x subst) (expand y subst))]
-    [_ pat]))
+;; Patterns P are pattern variables, atoms, lists of patterns, CDs, or a hash
+;; from atoms to patterns.
+(define-flat-contracts
+  [pattern? pvar? atom? (listof pattern?) cd? hash-pattern?]
+  [hash-pattern? (hash/c atom? pattern? #:immutable #t)])
+
+;; A substitution is a finite map from pattern variable ids to patterns.
+(define subst? (hash/c symbol? pattern? #:immutable #t))
 
 ;; Does `x` occur in `pat` when `pat` is expanded under `subst`?
 (define/contract (occurs? x pat subst)
@@ -108,7 +93,8 @@
   (match pat
     [(pvar y) (or (equal? x y) (occurs? x (hash-ref subst y #f)))]
     [(cons p1 p2) (or (occurs? x p1 subst) (occurs? x p2 subst))]
-    [_ #f]))
+    [(? hash?) (for/or ([(_ v) pat]) (occurs? x v subst))]
+    [(? atom-or-nil?) #f]))
 
 ;; Finds a substitution that makes two patterns equal, or fails. Patterns either
 ;; unify or don't; no backtracking is necessary.
@@ -121,12 +107,20 @@
     [(term (pvar x)) (unify-var x term subst)]
     ;; Equal atoms unify. Otherwise, unification fails: an atom only unifies
     ;; with an equal atom or a pattern variable.
-    [((? atom?) _) (and (equal? pat1 pat2) subst)]
-    [(_ (? atom?)) #f]
-    [((cons x xs) (cons y ys))
-     ;; Emulating the Maybe monad here.
-     (define xy-subst (unify x y subst))
-     (and xy-subst (unify xs ys xy-subst))]))
+    [((? atom-or-nil?) _) (and (equal? pat1 pat2) subst)]
+    [(_ (? atom-or-nil?)) #f]
+    [((cons x xs) (cons y ys)) (unify2 x y xs ys subst)]
+    [((cd h1 r1)  (cd h2 r2))  (unify2 h1 h2 r1 r2 subst)]
+    ;; Here is where the information ordering discussed above becomes relevant.
+    [((? hash? h) (? hash? g))
+     TODO]
+    ;; Catch-all failure.
+    [(_ _) #f]))
+
+;; Unifies x1 with x2 and y1 with y2. Emulates the maybe monad.
+(define (unify2 x1 x2 y1 y2 subst)
+  (define x-subst (unify x1 x2 subst))
+  (and x-subst (unify y1 y2 x-subst)))
 
 (define (unify-var x term subst)
   (cond
