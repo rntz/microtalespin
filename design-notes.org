@@ -24,8 +24,9 @@ they're basically part of the scenario:
 - *init-facts*
 
 * UNLEARNING FACTS
-We never forget a fact once learned. However, queries find only the _first_ fact matching a
-given pattern. So:
+We never forget a fact once learned. (By contrast, we *do* sometimes delete
+goals, demons, and personae.) However, queries find only the _first_ fact
+matching a given pattern. So:
 
 1. Most facts come with a "mode", which can be positive or negative.[1]
 
@@ -38,7 +39,7 @@ generation component.
 * KNOWERS AND 'world
 The database of facts maps from "knowers" to lists of known things. The knower
 'world is special; it knows the true facts. This creates complications, because
-knows(world, knows(Person, X)) and knows(Person,X) are "morally equivalent" but
+knows(world, knows(Person, X)) and knows(Person,X) are morally equivalent but
 technically distinct.
 
 * DEMONS
