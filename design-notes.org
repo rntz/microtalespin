@@ -1,8 +1,27 @@
-* KNOWERS AND "WORLD"
-The database of facts maps from "knowers" to lists of known things. The knower
-'world is special; it knows the true facts. This creates complications, because
-knows(world, knows(Person, X)) and knows(Person,X) are "morally equivalent" but
-technically distinct.
+* CDs
+CDs are basically tagged records. They're used ubiquitously in Sack's code, but
+I'm not sure they're really necessary. However, I don't yet understand the
+English-language generation; possibly their structure is useful there.
+
+* THE DATABASE IS COMPLEX
+The database or "state" of the simulation has many components:
+
+- *personae*: The set of _living_ actors.
+- (get Knower 'facts): list of facts Knower knows.
+- (get Actor 'goals): list of Actor's goals.
+- (get Actor 'demons): list of Actor's "demons".
+
+I find this overly complex. I think a "bag of facts" approach would considerably
+simplify the codebase, where "facts" would include all of the above (alive/dead
+status, facts known, goals, demons).
+
+There are other globals, but they're never mutated within a given simulation, so
+they're basically part of the scenario:
+
+- *goals*: List of possible goal categories (hunger, thirst).
+- *all-locations*
+- *all-objects*
+- *init-facts*
 
 * UNLEARNING FACTS
 We never forget a fact once learned. However, queries find only the _first_ fact matching a
@@ -15,3 +34,26 @@ given pattern. So:
 
 [1] There are other modes, too. They seem to have to do with the English text
 generation component.
+
+* KNOWERS AND 'world
+The database of facts maps from "knowers" to lists of known things. The knower
+'world is special; it knows the true facts. This creates complications, because
+knows(world, knows(Person, X)) and knows(Person,X) are "morally equivalent" but
+technically distinct.
+
+* DEMONS
+Every actor gets an associated list of demons. They seem to be patterns which,
+when a fact becomes true that matches them, cause the actor to take a certain
+reaction. Not sure of details.
+
+* DEATH AND CONSEQUENCES
+The death check is implemented at quite a low level, in the addfact function.
+I'm not sure whether it needs to be there. I'd like to put it in the FOO-conseqs
+functions. However:
+
+- Death is not a fact (it's the removal from *personae*).
+- Thus, it can't be a _consequence_.
+- But, the FOO-conseqs functions aren't pure. They also mutate *plans* and
+  *actions*. Would it be okay to just mutate *personae* when we look at the
+  consequences of an action that kills someone? I'm not sure. The _time_ at
+  which the death would take effect might be different. Argh, state!

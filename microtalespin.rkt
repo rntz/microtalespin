@@ -242,7 +242,11 @@
 (define-cd (propel actor object to) [actor actor] [object object] [to to])
 (define-cd (wants actor goal) [actor actor] [object goal])
 
-;; TODO: un-grasp, ptrans, has, is-at, state, relation, where-is, who-has.
+(define-match-expander state
+  (syntax-rules () [(_ A state M) (tag state [actor A] [mode M])])
+  (syntax-rules () [(_ A state M) (tag state [actor A] [mode M])]))
+
+;; TODO: un-grasp, ptrans, has, is-at, relation, where-is, who-has.
 
 
 ;; ===== THE DATABASE =====
@@ -257,14 +261,14 @@
 ;; around, and take a more functional or monadic approach.
 
 ;; Maps "knowers" (actors or 'world) to their knowledge (a list of CDs).
-(define *actor-knows* (make-hash))
+(define *knowledge* (make-hash))
 
 ;; Maps actors to their goals (a list of CDs).
-(define *actor-goals* (make-hash))
+(define *goals* (make-hash))
 
 ;; Maps actors to their "demons" (a list of CD patterns). Not sure exactly what
 ;; these are for yet.
-(define *actor-demons* (make-hash))
+(define *demons* (make-hash))
 
 ;; List of living actors. TODO: where is it checked who is living?
 (define *personae* '())
@@ -279,16 +283,27 @@
     ['() (if (procedure? on-failure) (on-failure) on-failure)]
     [(cons x _) x]))
 
-(define (add-fact! who cd)
-  ()
-  TODO)
+;; I'm not sure whether we need both add-fact! and now-knows!, or could get by
+;; with only one. The differences are:
+;; - now-knows! un-nests the fact added.
+;; - now-knows! sometimes prints the fact added.
+;;
+;; Also, why is the death check _here_, rather than done via consequences?
+(define/contract (add-fact! who cd)
+  (-> atom? CD? void?)
+  (hash-update! *knowledge* who (curry cons cd))
+  ;; Check for deaths.
+  (match* (who cd)
+    [('world (state actor 'health mode)) #:when (member 'neg mode)
+     (set! *personae* (remove actor *personae*))]
+    [(_ _) (void)]))
 
 ;; Returns the first goal of actor's that matches pat, or #f if none match.
-(define (has-goal actor pat) (find-in pat (hash-ref *actor-goals* actor)))
+(define (has-goal actor pat) (find-in pat (hash-ref *goals* actor)))
 
 ;; Gives an actor a goal by pushing it on their list of goals.
 (define (add-goal! actor goal)
-  (hash-update! *actor-goals* actor (curry cons goal))
+  (hash-update! *goals* actor (curry cons goal))
   ;; TODO: saying stuff.
   #;(say (wants actor goal)))
 
@@ -296,7 +311,7 @@
 (define (remove-goal! actor goal)
   (define goal-instance (has-goal actor goal))
   (when goal-instance
-    (hash-update! *actor-goals* actor (curry remove goal-instance))))
+    (hash-update! *goals* actor (curry remove goal-instance))))
 
 ;; Finds out if `knower` knows something matching the pattern `fact`. If so,
 ;; returns the first such thing. Otherwise, return #f.
@@ -311,7 +326,7 @@
                 (displayln "de-nested knowledge!") ;; debugging
                 con]
                [_ fact]))
-  (find-in fact (hash-ref *actor-knows* knower)))
+  (find-in fact (hash-ref *knowledge* knower)))
 
 ;; A thing is true if:
 ;; - it says that A knows P, and A does know P.
@@ -374,13 +389,10 @@
 
 ;; Makes `who` learn `what`. Sack's 'now-knows.
 (define (now-knows! who what [say-flag #f])
-  ;; If `who` is world, denoting a true fact, and `what` is an mloc (saying that
-  ;; person knows a thing), then we un-nest.
   (match* (who what)
-    [('world (mloc actor content))
-     (displayln "un-nesting learned knowledge") ; debugging
-     (set! who actor)
-     (set! what content)]
+    ;; If `who` is world, denoting a true fact, and `what` is an mloc (saying
+    ;; that person knows a thing), then we un-nest.
+    [('world (mloc actor content)) (set! who actor) (set! what content)]
     [(_ _) (void)])
   (when (or say-flag (equal? who 'world))
     (displayln "TODO: say learned fact"))
