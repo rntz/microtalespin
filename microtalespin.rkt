@@ -46,22 +46,6 @@
    [roles  (hash/c atom? any/c #:immutable #t)])
   #:transparent)
 
-;; Syntax for constructing & pattern-matching on CDs. For example:
-;;
-;;     > (define x (tag 'loc [actor 'john] [val 'hereford]))
-;;     > x
-;;     (CD 'loc '#hash((actor . john) (val . hereford)))
-;;     > (match x [(tag x [actor y]) (list x y)])
-;;     '(loc john)
-;;
-(define-match-expander tag
-  (syntax-parser
-    [(_ name [role:id filler] ...)
-     #'(CD name (hash-table ['role filler] ...))])
-  (syntax-parser
-    [(_ name [role:id filler] ...)
-     #'(CD name (make-immutable-hash (list (cons 'role filler) ...)))]))
-
 
 ;; ===== UNIFICATION =====
 
@@ -193,6 +177,12 @@
 
 
 ;; ===== CD OPERATIONS =====
+;;
+;; I am not super happy with this code. CDs seem very boilerplatey. I don't
+;; fully understand why Sack's code uses tagged record CDs rather than a simpler
+;; Prolog-style (predicate argument ...) representation. Maybe I'll find out
+;; once I get to the natural language generation.
+
 (define (has-role c role) (hash-has-key? (CD-roles c) role))
 
 (define (get-role c role [failure-result #f])
@@ -210,15 +200,49 @@
      (define next (get-role cd r failure-result))
      (if (has-role cd r) (get-role* next rs) next)]))
 
-
-;; ===== CD CONSTRUCTOR FUNCTIONS =====
+;; Syntax for constructing & pattern-matching on CDs. For example:
+;;
+;;     > (define x (tag 'loc [actor 'john] [val 'hereford]))
+;;     > x
+;;     (CD 'loc '#hash((actor . john) (val . hereford)))
+;;     > (match x [(tag x [actor y]) (list x y)])
+;;     '(loc john)
+;;
+(define-match-expander tag
+  (syntax-parser
+    [(_ name [role:id filler] ...)
+     #'(CD name (hash-table ['role filler] ...))])
+  (syntax-parser
+    [(_ name [role:id filler] ...)
+     #'(CD name (make-immutable-hash (list (cons 'role filler) ...)))]))
 
-;; (mloc actor content) == (tag 'mloc [con content] [val (tag 'cp [part actor])])
-;; expresses that `actor` knows `content`.
-(define-for-syntax mloc-stx
-  (syntax-rules ()
-    [(_ actor content) (tag 'mloc [con content] [val (tag 'cp [part actor])])]))
-(define-match-expander mloc mloc-stx mloc-stx)
+;; A macro-defining macro. Some magic involved. Sorry.
+(define-simple-macro (define-cd (name arg ...) [id pat] ...)
+  #:with (fixed-id ...) (syntax->datum #'(id ...))
+  (define-match-expander name
+    (syntax-rules () [(_ arg ...) (tag 'name [fixed-id pat] ...)])
+    (syntax-rules () [(_ arg ...) (tag 'name [fixed-id pat] ...)])))
+
+;; Syntax for constructing & pattern-matching specific CD forms. For example:
+;;
+;;     (mloc A C)
+;;  == (tag 'mloc [con C] [val (tag 'cp [part A])])
+;;  == (CD 'mloc (hash 'con C 'val (CD 'cp (hash 'part A))))
+;;
+(define-cd (mloc actor con) [con con] [val (tag 'cp [part actor])])
+(define-cd (atrans act obj to from) [actor act] [object obj] [to to] [from from])
+(define-cd (cause x y) [ante x] [conseq y])
+(define-cd (grasp actor object) [actor actor] [object object])
+(define-cd (ingest actor object) [actor actor] [object object])
+(define-cd (mbuild actor object) [actor actor] [object object])
+(define-cd (mtrans actor object to from)
+  [actor actor] [object object] [from from]
+  [to (tag 'cp [part to])])
+(define-cd (plan actor object) [actor actor] [object object])
+(define-cd (propel actor object to) [actor actor] [object object] [to to])
+(define-cd (wants actor goal) [actor actor] [object goal])
+
+;; TODO: un-grasp, ptrans, has, is-at, state, relation, where-is, who-has.
 
 
 ;; ===== THE DATABASE =====
@@ -230,39 +254,104 @@
 ;; I have reorganized this global state to be more explicit (no more property
 ;; lists), but kept the imperative approach for now. Eventually I would like to
 ;; identify more clearly exactly how this "global" state needs to be passed
-;; around to take a more functional or monadic approach.
+;; around, and take a more functional or monadic approach.
 
-;; The database. Maps actors (symbols) to their knowledge-bases (CDs?).
-(define *db* (make-hash))
+;; Maps "knowers" (actors or 'world) to their knowledge (a list of CDs).
+(define *actor-knows* (make-hash))
 
-;; Finds out if `knower` knows something matching the pattern `fact`. If so,
-;; returns it. Otherwise, returns #f.
-(define/contract (knows knower fact)
-  (-> atom? pattern? pattern?)
-  (memquery knower
-            ;; This performs a clever trick. If we're asking whether K knows
-            ;; that (K knows F), we un-nest and simply ask whether K knows F. I
-            ;; don't know why or when this is necessary. I also don't know why
-            ;; only one level of un-nesting suffices.
-            (match fact [(mloc (== knower) con) con] [_ fact])))
+;; Maps actors to their goals (a list of CDs).
+(define *actor-goals* (make-hash))
 
-;; Returns the first fact in knower's database that matches pat and returns it,
-;; or #f if none match.
-(define (memquery knower pat)
-  (find-in pat (hash-ref (hash-ref *db* knower) 'facts)))
+;; Maps actors to their "demons" (a list of CD patterns). Not sure exactly what
+;; these are for yet.
+(define *actor-demons* (make-hash))
 
-;; Finds a term unifying with `pat` in `seq`, or uses `on-failure`.
+
+;; ===== QUERYING THE DATABASE =====
+
+;; Finds an element of `seq` that unifies with `pat`, or uses `on-failure`.
 (define/contract (find-in pat seq [on-failure #f])
   (->* (pattern? (listof pattern?)) (any/c) any/c)
   (match (memf (curry unify pat) seq)
     ['() (if (procedure? on-failure) (on-failure) on-failure)]
     [(cons x _) x]))
 
-
-;; ===== FORWARD CHAINING / PLANNING =====
-(define (is-true cd)
-  (match (CD-header cd)
-    ['mloc (knows (get-role* cd '(val part)) (get-role cd 'con))]
+;; Returns the first goal of actor's that matches pat, or #f if none match.
+(define (has-goal actor pat) (find-in pat (hash-ref *actor-goals* actor)))
+
+;; Gives an actor a goal by pushing it on their list of goals.
+(define (add-goal! actor goal)
+  (hash-update! *actor-goals* actor (curry cons goal))
+  ;; TODO: saying stuff.
+  #;(say (wants actor goal)))
+
+;; Removes the first goal matching a given pattern.
+(define (remove-goal! actor goal)
+  (define goal-instance (has-goal actor goal))
+  (when goal-instance
+    (hash-update! *actor-goals* actor (curry remove goal-instance))))
+
+;; Finds out if `knower` knows something matching the pattern `fact`. If so,
+;; returns the first such thing. Otherwise, return #f.
+(define/contract (knows knower fact)
+  (-> atom? pattern? pattern?)
+  ;; This performs a clever trick. If we're asking whether K knows that (K knows
+  ;; F), we un-nest and simply ask whether K knows F. I don't know why or when
+  ;; this is necessary. I also don't know why only one level of un-nesting
+  ;; suffices.
+  (set! fact (match fact [(mloc (== knower) con) con] [_ fact]))
+  (find-in fact (hash-ref *actor-knows* knower)))
+
+;; A thing is true if:
+;; - it says that A knows P, and A does know P.
+;; - otherwise, if the world knows it.
+;;
+;; You can feed this a pattern; it will return the (first) instantiation of that
+;; pattern that is true, or #f.
+(define/contract (is-true cd)
+  (-> pattern? pattern?)
+  (match cd
+    [(mloc actor content) (knows actor content)]
     [_ (knows 'world cd)]))
 
 
+;; ===== ASSERTING FACTS =====
+;; Sack sez:
+;;
+;; > assert-fact is one of the central control functions. It starts with one fact,
+;; > infers the consequences, infers the consequences of the consequences, etc.
+;; > Besides the simple result put in *conseqs* (e.g., ptrans changes locs), new
+;; > states may lead to response actions (put in *actions*) or new plans (put in
+;; > *plans*). The plans are done after all the consequences are inferred.
+;;
+;; Big stateful mudball incoming.
+
+(define (now-knows! . blah) TODO)
+
+(define (assert-fact! x)
+  ;; Mutable variables accumulating actions and plans.
+  (define actions '())
+  (define plans '())
+
+  ;; Loop repeatedly deducing consequences until steady state.
+  (let forward-chain ([learned (list x)])
+    ;; Mutable variable accumulating consequences.
+    (define conseqs '())
+    (define (learn! x) (set! conseqs (cons x conseqs)))
+
+    ;; For every CD learned, add consequences to conseqs, possibly adding to
+    ;; actions & plans, and possibly changing people's demons.
+    (for ([fact learned])
+      (now-knows! 'world fact '()) ;; TODO
+      (match fact
+        ;; Consequences of an mloc change.
+        [(mloc actor content) TODO]
+        ;; TODO: atrans grasp ingest loc mbuild mtrans plan propel ptrans
+        ;; TODO: catch-all case? is it necessary?
+        ))
+
+    ;; Keep going til fixed point!
+    (unless (null conseqs) (forward-chain conseqs)))
+
+  ;; Perform the actions and evaluate the plans.
+  TODO)
