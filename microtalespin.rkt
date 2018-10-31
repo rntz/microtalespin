@@ -266,6 +266,9 @@
 ;; these are for yet.
 (define *actor-demons* (make-hash))
 
+;; List of living actors. TODO: where is it checked who is living?
+(define *personae* '())
+
 
 ;; ===== QUERYING THE DATABASE =====
 
@@ -275,6 +278,10 @@
   (match (memf (curry unify pat) seq)
     ['() (if (procedure? on-failure) (on-failure) on-failure)]
     [(cons x _) x]))
+
+(define (add-fact! who cd)
+  ()
+  TODO)
 
 ;; Returns the first goal of actor's that matches pat, or #f if none match.
 (define (has-goal actor pat) (find-in pat (hash-ref *actor-goals* actor)))
@@ -299,7 +306,11 @@
   ;; F), we un-nest and simply ask whether K knows F. I don't know why or when
   ;; this is necessary. I also don't know why only one level of un-nesting
   ;; suffices.
-  (set! fact (match fact [(mloc (== knower) con) con] [_ fact]))
+  (set! fact (match fact
+               [(mloc (== knower) con)
+                (displayln "de-nested knowledge!") ;; debugging
+                con]
+               [_ fact]))
   (find-in fact (hash-ref *actor-knows* knower)))
 
 ;; A thing is true if:
@@ -326,8 +337,6 @@
 ;;
 ;; Big stateful mudball incoming.
 
-(define (now-knows! . blah) TODO)
-
 (define (assert-fact! x)
   ;; Mutable variables accumulating actions and plans.
   (define actions '())
@@ -337,16 +346,23 @@
   (let forward-chain ([learned (list x)])
     ;; Mutable variable accumulating consequences.
     (define conseqs '())
-    (define (learn! x) (set! conseqs (cons x conseqs)))
+    (define (deduce! x) (set! conseqs (cons x conseqs)))
 
     ;; For every CD learned, add consequences to conseqs, possibly adding to
     ;; actions & plans, and possibly changing people's demons.
     (for ([fact learned])
-      (now-knows! 'world fact '()) ;; TODO
+      (now-knows! 'world fact)
       (match fact
         ;; Consequences of an mloc change.
         [(mloc actor content) TODO]
-        ;; TODO: atrans grasp ingest loc mbuild mtrans plan propel ptrans
+        [(atrans actor obj to from) TODO]
+        [(grasp actor obj) TODO]
+        [(ingest actor obj) TODO]
+        ;; TODO: loc
+        [(mbuild actor obj) TODO]
+        [(mtrans actor obj to from) TODO]
+        [(plan actor object) TODO]
+        ;; TODO: propel ptrans
         ;; TODO: catch-all case? is it necessary?
         ))
 
@@ -355,3 +371,17 @@
 
   ;; Perform the actions and evaluate the plans.
   TODO)
+
+;; Makes `who` learn `what`. Sack's 'now-knows.
+(define (now-knows! who what [say-flag #f])
+  ;; If `who` is world, denoting a true fact, and `what` is an mloc (saying that
+  ;; person knows a thing), then we un-nest.
+  (match* (who what)
+    [('world (mloc actor content))
+     (displayln "un-nesting learned knowledge") ; debugging
+     (set! who actor)
+     (set! what content)]
+    [(_ _) (void)])
+  (when (or say-flag (equal? who 'world))
+    (displayln "TODO: say learned fact"))
+  (add-fact! who what))
